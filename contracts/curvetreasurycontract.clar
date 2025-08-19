@@ -232,3 +232,58 @@
     (ok true)
   )
 )
+;; read only functions
+
+(define-read-only (get-buy-price (stx-amount uint))
+  (let (
+    (current-supply (ft-get-supply curve-token))
+  )
+    (calculate-tokens-for-stx stx-amount current-supply)
+  )
+)
+
+(define-read-only (get-sell-price (token-amount uint))
+  (let (
+    (current-supply (ft-get-supply curve-token))
+  )
+    (calculate-stx-for-tokens token-amount current-supply)
+  )
+)
+
+(define-read-only (get-current-price)
+  (let (
+    (current-supply (ft-get-supply curve-token))
+  )
+    (if (is-eq current-supply u0)
+      u0
+      (/ (* (var-get curve-slope) current-supply) PRECISION)
+    )
+  )
+)
+
+(define-read-only (get-contract-stats)
+  {
+    supply: (ft-get-supply curve-token),
+    reserve: (stx-get-balance (as-contract tx-sender)),
+    paused: (var-get contract-paused),
+    total-fees: (var-get total-fees-collected),
+    buyback-pool: (var-get buyback-pool),
+    current-price: (get-current-price)
+  }
+)
+
+(define-read-only (get-curve-parameters)
+  {
+    slope: (var-get curve-slope),
+    power: (var-get curve-power),
+    reserve-ratio: (var-get reserve-ratio)
+  }
+)
+
+(define-read-only (get-user-transaction (user principal) (block uint))
+  (map-get? transaction-history { user: user, block: block })
+)
+
+(define-read-only (is-paused)
+  (var-get contract-paused)
+)
