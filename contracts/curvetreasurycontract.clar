@@ -48,6 +48,8 @@
 (define-data-var daily-volume-limit uint u100000000000) ;; 100K STX daily limit
 (define-data-var last-reset-block uint u0)
 (define-data-var daily-volume uint u0)
+;; Internal monotonically increasing counter used for transaction indexing
+(define-data-var tx-counter uint u0)
 
 ;; Treasury metrics
 (define-data-var total-fees-collected uint u0)
@@ -105,8 +107,9 @@
     (try! (ft-mint? curve-token tokens-to-mint tx-sender))
     
     ;; Record transaction
+    (var-set tx-counter (+ (var-get tx-counter) u1))
     (map-set transaction-history
-      { user: tx-sender, block: block-height }
+      { user: tx-sender, block: (var-get tx-counter) }
       { amount: tokens-to-mint, action: "buy", price: (/ (* stx-amount PRECISION) tokens-to-mint) }
     )
     
@@ -149,8 +152,9 @@
     (try! (as-contract (stx-transfer? net-stx-amount tx-sender tx-sender)))
     
     ;; Record transaction
+    (var-set tx-counter (+ (var-get tx-counter) u1))
     (map-set transaction-history
-      { user: tx-sender, block: block-height }
+      { user: tx-sender, block: (var-get tx-counter) }
       { amount: token-amount, action: "sell", price: (/ (* stx-to-return PRECISION) token-amount) }
     )
     
@@ -286,4 +290,66 @@
 
 (define-read-only (is-paused)
   (var-get contract-paused)
+)
+;; private functions
+
+(define-private (calculate-tokens-for-stx (stx-amount uint) (current-supply uint))
+  ;; Linear bonding curve: tokens = stx_amount / (slope * (supply + 1))
+  ;; This creates increasing price as supply grows
+  (let (
+    (base-price (+ (var-get curve-slope) (/ (* (var-get curve-slope) current-supply) PRECISION)))
+  )
+    (/ (* stx-amount PRECISION) base-price)
+  )
+)
+
+(define-private (calculate-stx-for-tokens (token-amount uint) (current-supply uint))
+  ;; Reverse calculation for selling
+  (let (
+    (new-supply (- current-supply token-amount))
+    (avg-price (+ (var-get curve-slope) (/ (* (var-get curve-slope) (+ current-supply new-supply)) (* u2 PRECISION))))
+  )
+    (/ (* token-amount avg-price) PRECISION)
+  )
+)
+
+(define-private (check-governance)
+  (let (
+    (dao (var-get dao-address))
+  )
+    (if (is-some dao)
+      (if (is-eq tx-sender (unwrap-panic dao))
+        (ok true)
+        ERR_UNAUTHORIZED)
+      (if (is-eq tx-sender CONTRACT_OWNER)
+        (ok true)
+        ERR_UNAUTHORIZED)
+    )
+  )
+)
+
+(define-private (check-daily-volume (amount uint))
+  (let (
+    (current-count (var-get tx-counter))
+    (last-reset (var-get last-reset-block))
+    (current-volume (var-get daily-volume))
+    (blocks-per-day u144) ;; Approximate window using tx count as proxy for blocks
+  )
+    (if (>= (- current-count last-reset) blocks-per-day)
+      ;; Reset daily volume window
+      (begin
+        (var-set last-reset-block current-count)
+        (var-set daily-volume amount)
+        (ok true)
+      )
+      ;; Check if adding amount exceeds limit
+      (if (<= (+ current-volume amount) (var-get daily-volume-limit))
+        (begin
+          (var-set daily-volume (+ current-volume amount))
+          (ok true)
+        )
+        ERR_CIRCUIT_BREAKER
+      )
+    )
+  )
 )
